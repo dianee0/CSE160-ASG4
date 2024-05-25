@@ -79,8 +79,6 @@ class Cube{
             [0,0,-1, 0,0,-1, 0,0,-1]
         );
 
-        gl.uniform4f(u_FragColor, rgba[0]*.9, rgba[1]*.9, rgba[2]*.9, rgba[3]);
-
         // Top of the cube
         drawTriangle3DUVNormal(
             [0,1,0, 0,1,1, 1,1,1], 

@@ -8,15 +8,16 @@ var VSHADER_SOURCE =`
   attribute vec3 a_Normal;
   varying vec2 v_UV;
   varying vec3 v_Normal;
+  varying vec4 v_VertPos;
   uniform mat4 u_ModelMatrix;
   uniform mat4 u_ViewMatrix;
   uniform mat4 u_GlobalRotateMatrix;
   uniform mat4 u_ProjectionMatrix;
   void main() {
-    // gl_Position = u_GlobalRotateMatrix * u_ModelMatrix * a_Position;
     gl_Position = u_ProjectionMatrix * u_ViewMatrix * u_GlobalRotateMatrix * u_ModelMatrix * a_Position;
     v_UV = a_UV;
     v_Normal = a_Normal;
+    v_VertPos = u_ModelMatrix * a_Position;
   }`
 
 // Fragment shader program
@@ -27,8 +28,16 @@ var FSHADER_SOURCE =`
   uniform vec4 u_FragColor;
   uniform sampler2D u_Sampler0;
   uniform sampler2D u_Sampler1;
-  
   uniform int u_whichTexture;
+  uniform vec3 u_lightPos;
+  uniform vec3 u_cameraPos;
+  uniform vec3 u_spotlightPos;
+  uniform vec3 u_spotlightDir;
+  uniform float u_spotlightCutoff;
+  varying vec4 v_VertPos;
+  uniform bool u_lightOn;
+  uniform bool u_spotlightOn;
+
   void main() {
 
     if(u_whichTexture == -3){
@@ -50,6 +59,38 @@ var FSHADER_SOURCE =`
       gl_FragColor = vec4(1,.2,.2,1);
     }
 
+    if(u_lightOn) {
+      vec3 lightVector = u_lightPos - vec3(v_VertPos);
+      float r = length(lightVector);
+      vec3 L = normalize(lightVector);
+      vec3 N = normalize(v_Normal);
+      float nDotL = max(dot(N, L), 0.0);
+
+      vec3 R = reflect(-L, N);
+      vec3 E = normalize(u_cameraPos - vec3(v_VertPos));
+      float specular = pow(max(dot(E, R), 0.0), 10.0);
+
+      vec3 diffuse = vec3(gl_FragColor) * nDotL * 0.7;
+      vec3 ambient = vec3(gl_FragColor) * 0.3;
+      vec4 resultColor = vec4(specular + diffuse + ambient, 1.0);
+
+    // Spotlight calculations
+    if (u_spotlightOn) { // Only apply spotlight calculations if the spotlight is on
+      vec3 spotDir = normalize(u_spotlightDir); 
+      vec3 spotToFragment = normalize(vec3(v_VertPos) - u_spotlightPos); 
+      float spotEffect = dot(spotToFragment, spotDir); 
+      if (spotEffect > cos(radians(u_spotlightCutoff))) { 
+        float spotIntensity = pow(spotEffect, 10.0); // Adjust for the spotlight intensity
+        resultColor.rgb *= spotIntensity; 
+      } else { 
+        resultColor.rgb *= 0.1; // Reduce the color if outside the spotlight cone
+      } 
+    }
+
+      gl_FragColor = resultColor;
+    } else {
+      gl_FragColor = vec4(vec3(gl_FragColor) * 0.3, 1.0);
+    }
   }`
 
 // Global Variables
@@ -66,6 +107,11 @@ let u_GlobalRotateMatrix;
 let u_whichTexture;
 let u_Sampler0;
 let u_Sampler1;
+let u_lightPos;
+let u_cameraPos;
+let u_spotlightPos; 
+let u_spotlightDir; 
+let u_spotlightCutoff; 
 
 function setupWebGL(){
   // Retrieve <canvas> element
@@ -79,7 +125,7 @@ function setupWebGL(){
   }
   gl.enable(gl.DEPTH_TEST);
   gl.depthFunc(gl.LEQUAL);
-  
+  // gl.clearDepth(1.0);
 
   gl.disable(gl.BLEND);
 }
@@ -116,6 +162,19 @@ function connectVariablesToGLSL(){
   if (!u_FragColor) {
     console.log('Failed to get the storage location of u_FragColor');
     return;
+  }
+
+  // Get the storage location of u_lightOn
+  u_lightOn = gl.getUniformLocation(gl.program, 'u_lightOn');
+  if (!u_lightOn) {
+    console.log('Failed to get the storage location of u_lightOn');
+    return;
+  }
+
+  // Get the storage location of u_spotlightOn
+  u_spotlightOn = gl.getUniformLocation(gl.program, 'u_spotlightOn');
+  if (!u_spotlightOn) {
+    console.log('Failed to get the storage location of u_spotlightOn');
   }
 
   // Get the storage location of u_Size
@@ -165,11 +224,42 @@ function connectVariablesToGLSL(){
       return;
   }
 
-    
+  // Get the storage location of u_lightPos
+  u_lightPos = gl.getUniformLocation(gl.program, 'u_lightPos');
+  if (!u_lightPos) {
+    console.log('Failed to get the storage location of u_lightPos');
+    return;
+  }
 
-    //Set the initial value for this matrix to identify
-    var identityM = new Matrix4();
-    gl.uniformMatrix4fv(u_ModelMatrix, false, identityM.elements);
+  // Get the storage location of u_cameraPos
+  u_cameraPos = gl.getUniformLocation(gl.program, 'u_cameraPos'); 
+  if (!u_cameraPos) {
+    console.log('Failed to get the storage location of u_cameraPos');
+    return;
+  }
+
+  // Get the storage location of u_spotlightPos
+  u_spotlightPos = gl.getUniformLocation(gl.program, 'u_spotlightPos'); 
+  if (!u_spotlightPos) {
+    console.log('Failed to get the storage location of u_spotlightPos');
+    return;
+  }
+
+  // Get the storage location of u_spotlightDir
+  u_spotlightDir = gl.getUniformLocation(gl.program, 'u_spotlightDir'); 
+  if (!u_spotlightDir) {
+    console.log('Failed to get the storage location of u_spotlightDir');
+    return;
+  }
+
+  // Get the storage location of u_spotlightCutoff
+  u_spotlightCutoff = gl.getUniformLocation(gl.program, 'u_spotlightCutoff'); 
+  if (!u_spotlightCutoff) {
+    console.log('Failed to get the storage location of u_spotlightCutoff');
+  }
+  //Set the initial value for this matrix to identify
+  var identityM = new Matrix4();
+  gl.uniformMatrix4fv(u_ModelMatrix, false, identityM.elements);
 
 }
 
@@ -190,31 +280,53 @@ let g_backFootAngle = 0;
 let g_feetAngle = 0;
 let g_Animation = false;
 let g_normalOn = false;
+let g_lightPos = [0,1,2];
+let g_lightOn = true;
+let camera;
+let g_spotlightPos = [0.0, 2.0, 5.0];
+let g_spotlightCutoff = 30.0;
+let g_spotlightOn = true;
+let g_lightMovement = true;
 
 
 function addActionsForHTMLUI(){
 
-    // // slider events
-    // document.getElementById("redSlide").addEventListener("mouseup", function() { g_selectedColor[0] = this.value/100; })
-    document.getElementById("animationOnButton").onclick = function() { g_Animation =true; }
-    document.getElementById("animationOffButton").onclick = function() { g_Animation =false; }
-    document.getElementById("normalOn").onclick =function() {g_normalOn = true}
-    document.getElementById("normalOff").onclick =function() {g_normalOn = false}
-
-    canvas.onclick = function(ev) {
-        if (ev.shiftKey) {
-            triggerWinkAnimation(); // Call the wink animation function
-        }
-    };
-
-    document.getElementById("armSlide").addEventListener("mousemove", function() { g_armAngle = this.value; renderAllShapes(); })
-    document.getElementById("backfeetSlide").addEventListener("mousemove", function() { g_backFootAngle = this.value; renderAllShapes(); })
-    document.getElementById("legSlide").addEventListener("mousemove", function() { g_legAngle = this.value; renderAllShapes(); })
-
-    document.getElementById("angleSlide").addEventListener("mousemove", function() { g_globalAngle = this.value; renderAllShapes(); })
-    document.getElementById("resetCameraButton").onclick = resetCameraAngles;
+  // // slider events
+  // document.getElementById("redSlide").addEventListener("mouseup", function() { g_selectedColor[0] = this.value/100; })
+  document.getElementById("lightOn").onclick = function() { g_lightOn = true; renderAllShapes(); }
+  document.getElementById("lightOff").onclick = function() { g_lightOn = false; renderAllShapes(); }
+  document.getElementById("normalOn").onclick =function() {g_normalOn = true}
+  document.getElementById("normalOff").onclick =function() {g_normalOn = false}
 
 
+  document.getElementById("lightSlideX").addEventListener("mousemove", function(ev) {if (ev.buttons == 1) {g_lightPos[0] = this.value/100; renderAllShapes();}});
+  document.getElementById("lightSlideY").addEventListener("mousemove", function(ev) {if (ev.buttons == 1) {g_lightPos[1] = this.value/100; renderAllShapes();}});
+  document.getElementById("lightSlideZ").addEventListener("mousemove", function(ev) {if (ev.buttons == 1) {g_lightPos[2] = this.value/100; renderAllShapes();}});
+  document.getElementById("armSlide").addEventListener("mousemove", function() { g_armAngle = this.value; renderAllShapes(); })
+  document.getElementById("backfeetSlide").addEventListener("mousemove", function() { g_backFootAngle = this.value; renderAllShapes(); })
+  document.getElementById("legSlide").addEventListener("mousemove", function() { g_legAngle = this.value; renderAllShapes(); })
+  document.getElementById("angleSlide").addEventListener("mousemove", function() { g_globalAngle = this.value; renderAllShapes(); })
+  document.getElementById("resetCameraButton").onclick = resetCameraAngles;
+
+  document.getElementById("spotlightSlideX").addEventListener("mousemove", function(ev) {if (ev.buttons == 1) {g_spotlightPos[0] = this.value; renderAllShapes();}}); 
+  document.getElementById("spotlightSlideY").addEventListener("mousemove", function(ev) {if (ev.buttons == 1) {g_spotlightPos[1] = this.value; renderAllShapes();}}); 
+  document.getElementById("spotlightSlideZ").addEventListener("mousemove", function(ev) {if (ev.buttons == 1) {g_spotlightPos[2] = this.value; renderAllShapes();}}); 
+  document.getElementById("spotlightCutoff").addEventListener("mousemove", function(ev) {if (ev.buttons == 1) {g_spotlightCutoff = this.value; renderAllShapes();}});
+  document.getElementById("toggleSpotlight").onclick = function() {
+    g_spotlightOn = !g_spotlightOn; // Toggle the spotlight 
+    renderAllShapes();
+  };
+
+  document.getElementById("toggleLightMovement").onclick = function() {
+    g_lightMovement = !g_lightMovement; // Toggle the light movement
+    renderAllShapes();
+  };
+
+  canvas.onmousemove = function(ev) {if (ev.buttons == 1){ click(ev) } };
+
+  document.getElementById('normalOn').onclick = function() {g_normalOn = true;};
+  document.getElementById('normalOff').onclick = function() {g_normalOn = false;};
+  
 
 }
 
@@ -250,27 +362,69 @@ function sendTextureToGLSL(image, textureUnit) {
   console.log('Texture loaded for unit ' + textureUnit);
 }
 
+let mouseDown = false;   // Track if the mouse is pressed
+let lastMouseX = null;   // Last position of the cursor
+let lastMouseY = null;   // Last position of the cursor
 
+function handleMouseDown(event) {
+    mouseDown = true;
+    lastMouseX = event.clientX;
+    lastMouseY = event.clientY;
+}
+
+function handleMouseUp(event) {
+    mouseDown = false;
+}
+
+function handleMouseMove(event) {
+  if (!mouseDown) {
+      return;
+  }
+  const newX = event.clientX;
+  const newY = event.clientY;
+
+  const deltaX = newX - lastMouseX;
+  const deltaY = newY - lastMouseY;
+
+  const rotationSpeed = 0.5;  // Adjust this value to increase or decrease sensitivity
+
+  // To reverse the direction of horizontal rotation, multiply deltaX by -1
+  camera.panLeft(-deltaX * rotationSpeed);
+
+  // Implement vertical rotation by adding rotation around the X-axis
+  // Note: You may want to limit the vertical angle to prevent flipping the view upside-down
+  camera.panUp(-deltaY * rotationSpeed);
+
+  lastMouseX = newX;
+  lastMouseY = newY;
+
+  // Update the view matrix in the shader
+  gl.uniformMatrix4fv(u_ViewMatrix, false, camera.viewMat.elements);
+  renderAllShapes(); // You might want to only render when the camera updates to improve performance
+}
+
+function setupMouseHandlers() {
+    canvas.addEventListener('mousedown', handleMouseDown, false);
+    canvas.addEventListener('mouseup', handleMouseUp, false);
+    canvas.addEventListener('mousemove', handleMouseMove, false);
+}
 
 function main() {
+  setupWebGL(); // set up the WebGL context
+  connectVariablesToGLSL(); // Connect all shader variables
+  addActionsForHTMLUI(); // Setup UI interactions
+  setupMouseHandlers();
 
-    // set up canvas and gl variables
-    setupWebGL();
-    // set up GLSL and connect GLSL variables
-    connectVariablesToGLSL();
-
-    // Set up actions for the HTML UI elements
-    addActionsForHTMLUI();
-    // initMouseControls(); // Initialize mouse controls
-
-    initTextures(gl,0);
+  camera = new Camera(canvas.width / canvas.height, 0.1, 1000);
+  document.onkeydown = keyDown; // Set up keyboard interaction
+  initTextures(gl,0);
 
 
-    // Specify the color for clearing <canvas>
-    // gl.clearColor(91/255, 138/255, 83/255, 1.0);
+  // Specify the color for clearing <canvas>
+  // gl.clearColor(91/255, 138/255, 83/255, 1.0);
 
-    // renderAllShapes();
-    requestAnimationFrame(tick);
+  // renderAllShapes();
+  requestAnimationFrame(tick);
 
 }
 
@@ -278,18 +432,18 @@ var g_startTime = performance.now()/1000.0;
 var g_seconds = performance.now()/1000.0 - g_startTime;
 
 function tick() {
-    // print some debug info so we know we are running
-    g_seconds = performance.now()/1000.0-g_startTime;
-    // console.log(g_seconds);
+  // print some debug info so we know we are running
+  g_seconds = performance.now()/1000.0-g_startTime;
+  // console.log(g_seconds);
 
-    // update animation angles
-    updateAnimationAngles();
+  // update animation angles
+  updateAnimationAngles();
 
-    // draw everything
-    renderAllShapes();
+  // draw everything
+  renderAllShapes();
 
-    // tell browser to update again when it has time
-    requestAnimationFrame(tick);
+  // tell browser to update again when it has time
+  requestAnimationFrame(tick);
 }
 
 
@@ -330,72 +484,101 @@ function convertCoordinatesEventToGL(ev){
     return ([x,y]);
 }
 
-let isWinking = false;
-let winkDuration = 0.5; // Duration of the wink in seconds
-let currentWinkTime = 0; // Current time elapsed in the wink animation
-
-function triggerWinkAnimation() {
-    isWinking = true;
-    currentWinkTime = 0; // Reset the timer
-}
-
 function updateAnimationAngles() {
     if (g_Animation) { // if yellow animation is on
         g_armAngle = (45*Math.sin(g_seconds));
         g_legAngle = (35*Math.sin(g_seconds))
         g_backFootAngle = 27.5 + 17.5 * Math.sin(g_seconds);  // Oscillates between 0 and 45 degrees
-
     }
-    if (isWinking) {
-        currentWinkTime += animationDelta; // Update time based on your frame time calculation
-        if (currentWinkTime > winkDuration) {
-            isWinking = false;
-            currentWinkTime = 0;
-        }
+    if (g_lightMovement) { // Only move the light if light movement is enabled
+      g_lightPos[0] = Math.cos(g_seconds);
     }
 
 }
 
 function resetCameraAngles() {
-    // Reset angles
-    g_globalAngle = 0;
-    // g_globalAngleY = 0;
-    g_globalAngleZ = 0;
+  // Reset angles
+  g_globalAngle = 0;
 
-    // Update slider positions
-    document.getElementById('angleSlide').value = 0;
-    document.getElementById('angleYSlide').value = 0;
-    document.getElementById('angleZSlide').value = 0;
+  // Reset camera position and orientation
+  camera.eye = new Vector3([0,0.5,-5]);
+  camera.at = new Vector3([0,0,0]);
+  camera.up = new Vector3([0, 1, 0]);
+  
+  // Update the view matrix with the new camera settings
+  camera.updateviewMat();
 
-    // Re-render the scene
-    renderAllShapes();
+  // Re-render the scene
+  renderAllShapes();
+}
+
+function keyDown(ev) {
+
+  switch (ev.keyCode) {
+      case 87: // W
+          camera.moveForward(0.3);
+          break;
+      case 83: // S
+          camera.moveBackward(0.3);
+          break;
+      case 65: // A
+          camera.moveLeft(0.3);
+          break;
+      case 68: // D
+          camera.moveRight(0.3);
+          break;
+      case 81: // Q
+          camera.panLeft(10); // Rotate left, angle in degrees
+          break;
+      case 69: // E
+          camera.panRight(10); // Rotate right, angle in degrees
+          break;
+      default:
+          return; // Skip rendering if no key is pressed
+  }
+  gl.uniformMatrix4fv(u_ViewMatrix, false, camera.viewMat.elements);
+  renderAllShapes(); // Update the scene
 }
 
 function renderAllShapes(){
 
   var startTime = performance.now();
 
-  //Pass the Projection Matrix 
-  var projMat = new Matrix4();
-
-  projMat.setPerspective(60, canvas.width/canvas.height, .1, 1000);
-  gl.uniformMatrix4fv(u_ProjectionMatrix, false, projMat.elements);
-
-  //Pass the view Matrix
-  var viewMat = new Matrix4();
-  viewMat.setLookAt(0, 0, 3, 0, 0, 0, 0, 1, 0);
-  gl.uniformMatrix4fv(u_ViewMatrix, false, viewMat.elements);
-
-  var globalRotMat = new Matrix4().rotate(g_globalAngle,0,1,0);
-  gl.uniformMatrix4fv(u_GlobalRotateMatrix, false, globalRotMat.elements);  
-
   // Clear <canvas>
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   gl.clear(gl.COLOR_BUFFER_BIT );
 
+  camera.projMat.setPerspective(camera.fov, canvas.width / canvas.height, .1, 1000);
+  gl.uniformMatrix4fv(u_ProjectionMatrix, false, camera.projMat.elements);
+  gl.uniformMatrix4fv(u_ViewMatrix, false, camera.viewMat.elements);
+  gl.uniformMatrix4fv(u_GlobalRotateMatrix, false, new Matrix4().rotate(g_globalAngle, 0, 1, 0).elements);
+
+  gl.uniform3f(u_lightPos, g_lightPos[0], g_lightPos[1], g_lightPos[2]);
+  gl.uniform1f(u_lightOn, g_lightOn);
+
+  gl.uniform3f(u_cameraPos, camera.eye.x, camera.eye.y, camera.eye.z);
+
+  // Set spotlight parameters
+  gl.uniform3f(u_spotlightPos, g_spotlightPos[0], g_spotlightPos[1], g_spotlightPos[2]); // set to the desired position
+  gl.uniform3f(u_spotlightDir, 0.0, -1.0, -1.0); // set to the desired direction
+  gl.uniform1f(u_spotlightCutoff, g_spotlightCutoff); // set to the desired cutoff angle
+  gl.uniform1i(u_spotlightOn, g_spotlightOn ? 1 : 0);
+
+  // draw the light
+  if (g_lightOn){
+    var light = new Cube();
+    light.color = [2,2,0,1];
+    light.matrix.translate(g_lightPos[0],g_lightPos[1],g_lightPos[2]);
+    light.matrix.scale(-.1,-.1,-.1);
+    light.matrix.translate(-.5,-.5,-.5);
+    light.render();
+  }
+
   var sphereObj = new Sphere();
+  // sphereObj.textureNum=0;
   sphereObj.color = [1,0.8,0.8,1];
   if (g_normalOn) sphereObj.textureNum = -3;
+  sphereObj.textureNum = 1;
   sphereObj.translate(1.0,1.0,0);
   sphereObj.scale(0.7,0.7,0.7);
   sphereObj.render();
@@ -405,15 +588,15 @@ function renderAllShapes(){
   skybox.color = [0.8,0.8,0.8,1];
   if (g_normalOn) skybox.textureNum = -3;
   // skybox.textureNum = 0; // Assuming texture unit 0 has the sky texture
-  skybox.matrix.scale(-50, -50, -50);
+  skybox.matrix.scale(-10, -10, -10);
   skybox.matrix.translate(-0.5, -0.5, -0.5); // Center the cube
   skybox.render();
 
   //Floor
   var floor = new Cube();
-  floor.color = [0.0, 50.0, 0.0, 1.0];
+  floor.color = [0.0, 10.0, 0.0, 1.0];
   if (g_normalOn) floor.textureNum = -3;
-  floor.textureNum = -2;
+  // floor.textureNum = 1;
   floor.matrix.translate(0,-.75,0.0);
   floor.matrix.scale(10,0,10);
   floor.matrix.translate(-.5,0,-0.5);

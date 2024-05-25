@@ -73,7 +73,7 @@ function drawTriangle3D(vertices){
 
     gl.drawArrays(gl.TRIANGLES, 0, n);
 
-  }
+}
 
 function drawTriangle3DUVNormal(vertices, uv, normals){
     var n = vertices.length/3; //number of vertices
